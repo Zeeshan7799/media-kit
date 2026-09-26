@@ -1243,15 +1243,13 @@ class NativePlayer extends PlatformPlayer {
       await waitForVideoControllerInitializationIfAttached;
     }
 
-    final name = property.toNativeUtf8();
-    final data = value.toNativeUtf8();
-    mpv.mpv_set_property_string(
-      ctx,
-      name.cast(),
-      data.cast(),
-    );
-    calloc.free(name);
-    calloc.free(data);
+    // Routed through [_setPropertyString] so it honours
+    // [PlayerConfiguration.async]: a synchronous mpv_set_property_string
+    // blocks the calling (UI) isolate until the mpv core has applied the
+    // property. Properties like `vo` / `wid` re-initialise the video output
+    // (e.g. AndroidVideoController.widListener on every surface resize),
+    // which froze the UI for 200–350 ms per call.
+    await _setPropertyString(property, value);
   }
 
   /// Retrieves the value of a property from the internal libmpv instance of this [Player].

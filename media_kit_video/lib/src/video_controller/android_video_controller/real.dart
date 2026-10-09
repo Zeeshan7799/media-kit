@@ -35,7 +35,12 @@ class AndroidVideoController extends PlatformVideoController {
 
   NativePlayer get platform => player.platform as NativePlayer;
 
+  bool _disposed = false;
+
+  bool get _isDisposed => _disposed || platform.disposed;
+
   Future<void> setProperty(String key, String value) async {
+    if (_isDisposed) return;
     await platform.setProperty(key, value, waitForInitialization: false);
   }
 
@@ -48,6 +53,7 @@ class AndroidVideoController extends PlatformVideoController {
   /// Listener for updating the --wid property.
   Future<void> widListener() {
     return lock.synchronized(() async {
+      if (_isDisposed) return;
       final width = rect.value?.width.toInt() ?? 1;
       final height = rect.value?.height.toInt() ?? 1;
       final androidSurfaceSizeValue = [width, height].join('x');
@@ -70,8 +76,17 @@ class AndroidVideoController extends PlatformVideoController {
       );
       // Instead of seeking to the start (Duration.zero), seek to the current playback position
       // without jumping the user to the start of the media.
+      if (_isDisposed) return;
       final currentPosition = player.state.position;
-      await player.seek(currentPosition);
+      try {
+        await player.seek(currentPosition);
+      } on AssertionError catch (error) {
+        // Disposal can win the player lock after the check above.
+        if (!platform.disposed ||
+            error.message != '[Player] has been disposed') {
+          rethrow;
+        }
+      }
     });
   }
 
@@ -86,6 +101,7 @@ class AndroidVideoController extends PlatformVideoController {
     wid.addListener(widListener);
     videoParamsSubscription = player.stream.videoParams.listen(
       (event) => lock.synchronized(() async {
+        if (_isDisposed) return;
         final int width;
         final int height;
         if (event.rotate == 0 || event.rotate == 180) {
@@ -105,6 +121,7 @@ class AndroidVideoController extends PlatformVideoController {
         }
 
         final handle = await player.handle;
+        if (_isDisposed) return;
 
         await _channel.invokeMethod(
           'VideoOutputManager.SetSurfaceSize',
@@ -115,6 +132,7 @@ class AndroidVideoController extends PlatformVideoController {
           },
         );
 
+        if (_isDisposed) return;
         rect.value = Rect.fromLTWH(
           0.0,
           0.0,
@@ -229,9 +247,11 @@ class AndroidVideoController extends PlatformVideoController {
 
   /// Disposes the instance. Releases allocated resources back to the system.
   Future<void> _dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    wid.removeListener(widListener);
     super.dispose();
     wid.dispose();
-    wid.removeListener(widListener);
     await videoParamsSubscription?.cancel();
     final handle = await player.handle;
     _controllers.remove(handle);
@@ -267,9 +287,11 @@ class AndroidVideoController extends PlatformVideoController {
                     );
                     final int id = call.arguments['id'];
                     final int wid = call.arguments['wid'];
-                    _controllers[handle]?.rect.value = rect;
-                    _controllers[handle]?.id.value = id;
-                    _controllers[handle]?.wid.value = wid;
+                    final controller = _controllers[handle];
+                    if (controller == null || controller._isDisposed) break;
+                    controller.rect.value = rect;
+                    controller.id.value = id;
+                    controller.wid.value = wid;
                     break;
                   }
                 case 'VideoOutput.WaitUntilFirstFrameRenderedNotify':
